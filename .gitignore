@@ -89,3 +89,6 @@ env/
 .env
 .env.local
 .env.*.local
+
+# Local application data (ChromaDB, crawler cache, temporary files)
+data/
