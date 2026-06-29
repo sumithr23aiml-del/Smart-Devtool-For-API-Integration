@@ -1,0 +1,163 @@
+const axios = require('axios');
+
+class {{ api_name }}Client {
+  /**
+   * Client wrapper for the {{ api_name }} API.
+   *
+   * @param {Object} [config={}] - Configuration options for the client.
+   * @param {string} [config.apiKey] - The API authorization key/token. If not
+   *   provided, it will be loaded from the environment variables.
+   * @param {string} [config.baseUrl="{{ base_url }}"] - Override the default base URL.
+   * @param {number} [config.timeout={{ (timeout or timeouts or 30) * 1000 }}] - Request timeout in milliseconds.
+   */
+  constructor({ apiKey = null, baseUrl = "{{ base_url }}", timeout = {{ (timeout or timeouts or 30) * 1000 }} } = {}) {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.timeout = timeout;
+
+    {% if authentication.type != 'none' %}
+    const envVar = "{{ environment_variable or (api_name | upper) ~ '_API_KEY' }}";
+    this.apiKey = apiKey || process.env[envVar];
+    if (!this.apiKey) {
+      throw new Error(
+        `API key is required. Pass it to the constructor or define the environment variable: ${envVar}`
+      );
+    }
+    {% else %}
+    this.apiKey = null;
+    {% endif %}
+
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+
+    // Configure authentication header
+    {% if authentication.type in ['bearer_token', 'bearer'] %}
+    headers["Authorization"] = `Bearer ${this.apiKey}`;
+    {% elif authentication.type == 'api_key_header' %}
+    const headerName = "{{ authentication.header_name or 'X-API-Key' }}";
+    headers[headerName] = this.apiKey;
+    {% elif authentication.type == 'basic_auth' %}
+    headers["Authorization"] = `Basic ${this.apiKey}`;
+    {% endif %}
+
+    this.client = axios.create({
+      baseURL: this.baseUrl,
+      headers: headers,
+      timeout: this.timeout
+    });
+  }
+
+  /**
+   * Performs an HTTP request with proper error handling.
+   *
+   * @private
+   * @param {Object} config - Axios request config object.
+   * @returns {Promise<Object>} The parsed response data.
+   */
+  async _request(config) {
+    try {
+      // Inject API key in query parameters if query authentication is used
+      {% if authentication.type == 'api_key_query' %}
+      const queryParameter = "{{ authentication.query_parameter or 'api_key' }}";
+      if (!config.params) {
+        config.params = {};
+      }
+      if (this.apiKey) {
+        config.params[queryParameter] = this.apiKey;
+      }
+      {% endif %}
+
+      const response = await this.client(config);
+      return response.data;
+    } catch (error) {
+      if (error.response) {
+        throw new Error(
+          `API Request Failed [${error.response.status}]: ${JSON.stringify(error.response.data)}`
+        );
+      }
+      throw error;
+    }
+  }
+
+  {% for endpoint in endpoints %}
+  /**
+   * {{ endpoint.summary or endpoint.description }}
+   *
+   {% for param in endpoint.parameters %}
+   {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+   * @param {% if param.type == 'array' %}{Array}{% elif param.type == 'object' %}{Object}{% elif param.type == 'float' %}{number}{% elif param.type == 'int' %}{number}{% elif param.type == 'boolean' %}{boolean}{% else %}{string}{% endif %} {% if not param.required %}[{% endif %}params.{{ param.name }}{% if not param.required %}]{% endif %} - {{ param.description or 'No description provided.' }}
+   {% endif %}
+   {% endfor %}
+   * @returns {Promise<Object>} The API response payload.
+   */
+  async {{ endpoint.name }}(params = {}) {
+    let path = "{{ endpoint.path }}";
+
+    // Validate required fields
+    {% for param in endpoint.parameters %}
+    {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+    {% if param.required %}
+    if (params.{{ param.name }} === undefined || params.{{ param.name }} === null) {
+      throw new Error("Missing required parameter: {{ param.name }}");
+    }
+    {% endif %}
+    {% endif %}
+    {% endfor %}
+
+    // Replace path parameters
+    {% for param in endpoint.parameters %}
+    {% if param.location == 'path' %}
+    path = path.replace("{" + "{{ param.name }}" + "}", params.{{ param.name }});
+    {% endif %}
+    {% endfor %}
+
+    const queryParams = {};
+    {% for param in endpoint.parameters %}
+    {% if param.location == 'query' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+    if (params.{{ param.name }} !== undefined && params.{{ param.name }} !== null) {
+      queryParams["{{ param.name }}"] = params.{{ param.name }};
+    }
+    {% endif %}
+    {% endfor %}
+
+    const bodyData = {};
+    {% for param in endpoint.parameters %}
+    {% if param.location == 'body' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+    if (params.{{ param.name }} !== undefined && params.{{ param.name }} !== null) {
+      bodyData["{{ param.name }}"] = params.{{ param.name }};
+    }
+    {% endif %}
+    {% endfor %}
+
+    const headers = {};
+    {% for param in endpoint.parameters %}
+    {% if param.location == 'header' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+    if (params.{{ param.name }} !== undefined && params.{{ param.name }} !== null) {
+      headers["{{ param.name }}"] = params.{{ param.name }};
+    }
+    {% endif %}
+    {% endfor %}
+
+    const reqConfig = {
+      method: "{{ endpoint.method }}",
+      url: path
+    };
+
+    if (Object.keys(queryParams).length > 0) {
+      reqConfig.params = queryParams;
+    }
+    if (Object.keys(bodyData).length > 0) {
+      reqConfig.data = bodyData;
+    }
+    if (Object.keys(headers).length > 0) {
+      reqConfig.headers = headers;
+    }
+
+    return this._request(reqConfig);
+  }
+
+  {% endfor %}
+}
+
+module.exports = {{ api_name }}Client;

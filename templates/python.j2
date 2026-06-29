@@ -1,0 +1,194 @@
+import os
+from typing import Any, Dict, List, Optional
+import requests
+
+class {{ api_name }}Client:
+    """Client wrapper for {{ api_name }} API.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "{{ base_url }}",
+        api_key: Optional[str] = None,
+        timeout: int = {{ timeout or timeouts or 30 }},
+    ) -> None:
+        """Initializes the {{ api_name }}Client.
+
+        Args:
+            base_url: Override the default API base URL.
+            api_key: The authorization key/token. If not provided, it will be
+                fetched from the environment variables.
+            timeout: Default request timeout in seconds.
+        """
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        
+        # Load API key
+        {% if authentication.type != 'none' %}
+        env_var = "{{ environment_variable or (api_name | upper) ~ '_API_KEY' }}"
+        self.api_key = api_key or os.getenv(env_var)
+        if not self.api_key:
+            raise ValueError(
+                f"API key is required. Provide it explicitly or set the "
+                f"environment variable: {env_var}"
+            )
+        {% else %}
+        self.api_key = None
+        {% endif %}
+
+        self.session = requests.Session()
+        self.session.headers.update({"Accept": "application/json"})
+
+        # Configure authentication header
+        {% if authentication.type in ['bearer_token', 'bearer'] %}
+        self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
+        {% elif authentication.type == 'api_key_header' %}
+        header_name = "{{ authentication.header_name or 'X-API-Key' }}"
+        self.session.headers.update({header_name: self.api_key})
+        {% elif authentication.type == 'basic_auth' %}
+        self.session.headers.update({"Authorization": f"Basic {self.api_key}"})
+        {% endif %}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+        cookies: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Executes an HTTP request and checks for errors.
+
+        Args:
+            method: HTTP method (GET, POST, etc.).
+            path: Relative API path.
+            params: Query parameters dictionary.
+            json_data: JSON request body dictionary.
+            headers: Request-specific headers.
+            cookies: Request-specific cookies.
+            data: Request-specific form data.
+
+        Returns:
+            The parsed JSON response as a dictionary.
+
+        Raises:
+            requests.HTTPError: For 4xx and 5xx response statuses.
+        """
+        url = f"{self.base_url}{path}"
+        
+        if params is None:
+            params = {}
+
+        # Automatically inject API key in query if query-based auth is used
+        {% if authentication.type == 'api_key_query' %}
+        query_parameter = "{{ authentication.query_parameter or 'api_key' }}"
+        if self.api_key:
+            params[query_parameter] = self.api_key
+        {% endif %}
+
+        req_headers = {}
+        if headers:
+            req_headers.update(headers)
+
+        response = self.session.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json_data,
+            data=data,
+            headers=req_headers if req_headers else None,
+            cookies=cookies,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        
+        if response.status_code == 204:
+            return {}
+            
+        return response.json()
+
+    {% for endpoint in endpoints %}
+    def {{ endpoint.name }}(
+        self,
+        {% for param in endpoint.parameters %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if param.required %}
+        {{ param.name }}: {{ 'Any' if param.type == 'object' else 'list' if param.type == 'array' else 'float' if param.type == 'float' else 'int' if param.type == 'int' else 'bool' if param.type == 'boolean' else 'str' }},
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {% for param in endpoint.parameters %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if not param.required %}
+        {{ param.name }}: Optional[{{ 'Any' if param.type == 'object' else 'list' if param.type == 'array' else 'float' if param.type == 'float' else 'int' if param.type == 'int' else 'bool' if param.type == 'boolean' else 'str' }}] = None,
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+    ) -> Dict[str, Any]:
+        """{{ endpoint.summary or endpoint.description }}
+
+        Args:
+            {% for param in endpoint.parameters %}
+            {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+            {{ param.name }}: {{ param.description or 'No description provided.' }}
+            {% endif %}
+            {% endfor %}
+
+        Returns:
+            The parsed API response.
+        """
+        path = f"{{ endpoint.path }}"
+        
+        params = {}
+        {% for param in endpoint.parameters %}
+        {% if param.location == 'query' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        if {{ param.name }} is not None:
+            params["{{ param.name }}"] = {{ param.name }}
+        {% endif %}
+        {% endfor %}
+
+        json_data = {}
+        {% for param in endpoint.parameters %}
+        {% if param.location == 'body' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        if {{ param.name }} is not None:
+            json_data["{{ param.name }}"] = {{ param.name }}
+        {% endif %}
+        {% endfor %}
+
+        headers = {}
+        {% for param in endpoint.parameters %}
+        {% if param.location == 'header' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        if {{ param.name }} is not None:
+            headers["{{ param.name }}"] = {{ param.name }}
+        {% endif %}
+        {% endfor %}
+
+        cookies = {}
+        {% for param in endpoint.parameters %}
+        {% if param.location == 'cookie' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        if {{ param.name }} is not None:
+            cookies["{{ param.name }}"] = {{ param.name }}
+        {% endif %}
+        {% endfor %}
+
+        data = {}
+        {% for param in endpoint.parameters %}
+        {% if param.location == 'form' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        if {{ param.name }} is not None:
+            data["{{ param.name }}"] = {{ param.name }}
+        {% endif %}
+        {% endfor %}
+
+        return self._request(
+            method="{{ endpoint.method }}",
+            path=path,
+            params=params if params else None,
+            json_data=json_data if json_data else None,
+            headers=headers if headers else None,
+            cookies=cookies if cookies else None,
+            data=data if data else None,
+        )
+
+    {% endfor %}
