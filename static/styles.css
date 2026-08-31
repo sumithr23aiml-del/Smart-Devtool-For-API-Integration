@@ -163,11 +163,16 @@ body {
 /* Main Three-Column Dashboard Grid */
 .app-content {
     display: grid;
-    grid-template-columns: 280px 1fr 380px;
+    grid-template-columns: 280px minmax(0, 1fr) 380px;
     gap: 24px;
     flex: 1;
     min-height: 0;
     height: calc(100vh - 100px);
+    transition: grid-template-columns 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.app-content.sidebar-collapsed {
+    grid-template-columns: 280px minmax(0, 1fr);
 }
 
 /* Base card styling */
@@ -309,6 +314,7 @@ body {
     gap: 24px;
     height: 100%;
     min-height: 0;
+    min-width: 0;
 }
 
 .middle-workspace .control-panel {
@@ -318,6 +324,7 @@ body {
 .middle-workspace .display-panel {
     flex: 1;
     min-height: 0;
+    min-width: 0;
 }
 
 /* Configure Wrapper Form */
@@ -336,7 +343,7 @@ body {
 
 .configure-form-grid {
     display: grid;
-    grid-template-columns: 1fr 240px;
+    grid-template-columns: minmax(0, 1fr) 240px;
     gap: 24px;
 }
 
@@ -479,6 +486,8 @@ textarea {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
+    width: 100%;
 }
 
 .tab-pane {
@@ -486,6 +495,8 @@ textarea {
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    min-width: 0;
+    width: 100%;
 }
 
 .tab-pane.active {
@@ -541,7 +552,8 @@ textarea {
     border-bottom-right-radius: 8px;
     background: #FCFAF2;
     overflow: auto;
-    display: flex;
+    display: block;
+    min-width: 0;
 }
 
 .code-editor-container pre {
@@ -869,3 +881,102 @@ textarea {
 .code-editor-container .token.punctuation  { color: #7A7A70; }
 .code-editor-container .token.decorator,
 .code-editor-container .token.builtin      { color: #8a6e5e; }
+
+/* ─── Dark Mode Redefinitions ──────────────────────────────────────────────── */
+body.dark {
+    --bg-color: #161614;
+    --panel-bg: #1E1E1C;
+    --sidebar-bg: #1A1A18;
+    --panel-border: #2D2D29;
+    --accent: #A4A17B;
+    --accent-hover: #C2BF9B;
+    --accent-light: #B1AF86;
+    --accent-bg: #282823;
+    --text-main: #EBEAE4;
+    --text-muted: #999890;
+    --input-bg: #161614;
+    
+    --cyan: #8AA4A6;
+    --green: #A3BD96;
+    --yellow: #E6CDA3;
+    --red: #DF9B9B;
+}
+
+/* Adjust components with hardcoded backgrounds in Dark Mode */
+body.dark .theme-switcher {
+    background: #282823;
+}
+
+body.dark .theme-btn.active {
+    background: #1E1E1C;
+    color: var(--accent);
+}
+
+body.dark .credits-badge {
+    background: #282823;
+}
+
+body.dark .avatar-badge {
+    background: #38352F;
+    color: #D5C7B3;
+}
+
+body.dark .step.active {
+    background: #282823;
+}
+
+body.dark .help-box {
+    background: #222019;
+}
+
+body.dark .code-toolbar {
+    background: #282823;
+}
+
+body.dark .code-editor-container {
+    background: #1E1E1A;
+}
+
+body.dark .info-card {
+    background: #282823;
+}
+
+body.dark .endpoints-list {
+    background: #282823;
+}
+
+body.dark .endpoint-item {
+    background: #1E1E1C;
+}
+
+body.dark .chat-messages {
+    background: #282823;
+}
+
+body.dark .bubble-content {
+    background: #1E1E1C;
+}
+
+body.dark .chat-bubble.user .bubble-content {
+    background: #2D2B22;
+    border-color: #3D3B31;
+}
+
+body.dark .chip-btn {
+    background: #1E1E1C;
+}
+
+body.dark .chat-input-area input {
+    background: #1E1E1C;
+}
+
+/* Dark mode Prism syntax token overrides */
+body.dark .code-editor-container .token.comment { color: #85856b; }
+body.dark .code-editor-container .token.keyword { color: #c2bf9b; font-weight: 600; }
+body.dark .code-editor-container .token.string { color: #9bb37d; }
+body.dark .code-editor-container .token.number { color: #d68f8f; }
+body.dark .code-editor-container .token.boolean { color: #d68f8f; }
+body.dark .code-editor-container .token.function { color: #88a8bd; }
+body.dark .code-editor-container .token.class-name { color: #c2bf9b; font-weight: 600; }
+body.dark .code-editor-container .token.operator { color: #e5e5df; }
+body.dark .code-editor-container .token.punctuation { color: #9e9d95; }

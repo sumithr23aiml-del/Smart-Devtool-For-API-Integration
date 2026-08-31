@@ -9,6 +9,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const submitSpinner = submitBtn.querySelector('.spinner');
     const submitText = submitBtn.querySelector('.btn-text');
     
+    // AI Assistant toggle elements
+    const openAssistantBtn = document.getElementById('open-assistant-btn');
+    const closeAssistantBtn = document.getElementById('close-assistant-btn');
+    const rightSidebar = document.querySelector('.right-sidebar');
+    const appContent = document.querySelector('.app-content');
+    
     // Status tracking steps
     const pipelineStatusDiv = document.getElementById('pipeline-status');
     const stepCrawl = document.getElementById('step-crawl');
@@ -41,31 +47,62 @@ document.addEventListener('DOMContentLoaded', () => {
     let pollInterval = null;
 
     // 1. Tab Switching Logic
-    const leftTabButtons = document.querySelectorAll('.left-panel .tab-btn');
-    const leftTabPanes = document.querySelectorAll('.left-panel .tab-pane');
-    
-    leftTabButtons.forEach(btn => {
+    tabButtons.forEach(btn => {
         btn.addEventListener('click', () => {
+            if (btn.disabled) return;
             const targetTab = btn.getAttribute('data-tab');
-            leftTabButtons.forEach(b => b.classList.remove('active'));
-            leftTabPanes.forEach(p => p.classList.remove('active'));
+            tabButtons.forEach(b => b.classList.remove('active'));
+            tabPanes.forEach(p => p.classList.remove('active'));
             btn.classList.add('active');
-            document.getElementById(targetTab).classList.add('active');
+            const targetPane = document.getElementById(targetTab);
+            if (targetPane) targetPane.classList.add('active');
         });
     });
 
-    const rightTabButtons = document.querySelectorAll('.right-panel .tab-btn');
-    const rightTabPanes = document.querySelectorAll('.right-panel .tab-pane');
-    
-    rightTabButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const targetTab = btn.getAttribute('data-tab');
-            rightTabButtons.forEach(b => b.classList.remove('active'));
-            rightTabPanes.forEach(p => p.classList.remove('active'));
-            btn.classList.add('active');
-            document.getElementById(targetTab).classList.add('active');
+    // 1.5 Theme Switcher Logic
+    const themeBtnLight = document.querySelector('.theme-switcher .theme-btn:first-child');
+    const themeBtnDark = document.querySelector('.theme-switcher .theme-btn:last-child');
+
+    function applyTheme(theme) {
+        if (theme === 'dark') {
+            document.body.classList.add('dark');
+            themeBtnLight.classList.remove('active');
+            themeBtnDark.classList.add('active');
+        } else {
+            document.body.classList.remove('dark');
+            themeBtnLight.classList.add('active');
+            themeBtnDark.classList.remove('active');
+        }
+    }
+
+    if (themeBtnLight && themeBtnDark) {
+        themeBtnLight.addEventListener('click', () => {
+            applyTheme('light');
+            localStorage.setItem('theme', 'light');
         });
-    });
+
+        themeBtnDark.addEventListener('click', () => {
+            applyTheme('dark');
+            localStorage.setItem('theme', 'dark');
+        });
+
+        // Restore saved theme preference
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        applyTheme(savedTheme);
+    }
+
+    // AI Assistant Sidebar Toggling
+    if (openAssistantBtn && closeAssistantBtn && rightSidebar && appContent) {
+        openAssistantBtn.addEventListener('click', () => {
+            rightSidebar.classList.remove('hidden');
+            appContent.classList.remove('sidebar-collapsed');
+        });
+
+        closeAssistantBtn.addEventListener('click', () => {
+            rightSidebar.classList.add('hidden');
+            appContent.classList.add('sidebar-collapsed');
+        });
+    }
 
     // 2. Terminal Logger Helper
     function logToTerminal(message, type = 'system') {
@@ -455,7 +492,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/api/v1/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: conversationHistory })
+                    body: JSON.stringify({ 
+                        messages: conversationHistory,
+                        crawl_id: currentCrawlId
+                    })
                 });
 
                 if (!response.ok) {

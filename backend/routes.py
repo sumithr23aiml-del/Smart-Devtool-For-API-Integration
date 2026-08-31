@@ -61,6 +61,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., description="Conversational message history")
     provider: Optional[str] = Field(None, description="LLM provider override (gemini, openai, groq, mock)")
+    crawl_id: Optional[str] = Field(None, description="Active crawl ID containing documents collection")
 
 
 async def run_crawl_pipeline(crawl_id: str, url: str, max_depth: int):
@@ -292,7 +293,7 @@ async def chat_stream_endpoint(req: ChatCompletionRequest):
         chatbot = ConversationalChatbot(provider=req.provider)
         
         def token_generator():
-            for token in chatbot.stream_chat(dict_messages):
+            for token in chatbot.stream_chat(dict_messages, crawl_id=req.crawl_id):
                 yield token
 
         return StreamingResponse(token_generator(), media_type="text/plain")

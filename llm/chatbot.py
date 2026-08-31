@@ -24,7 +24,11 @@ class ConversationalChatbot:
             else:
                 self.model_name = "mock"
 
-    def stream_chat(self, messages: List[Dict[str, str]]) -> Generator[str, None, None]:
+    def stream_chat(
+        self, 
+        messages: List[Dict[str, str]], 
+        crawl_id: Optional[str] = None
+    ) -> Generator[str, None, None]:
         """
         Yields text tokens in real time for a given conversation history.
         """
@@ -36,12 +40,44 @@ class ConversationalChatbot:
         api_key_openai = os.getenv("OPENAI_API_KEY")
         api_key_groq = os.getenv("GROQ_API_KEY")
 
+        # 0. Retrieve RAG documentation context if crawl_id is provided
+        context = ""
+        if crawl_id and self.provider != "mock":
+            last_user_msg = messages[-1]["content"] if messages else ""
+            if last_user_msg:
+                try:
+                    from rag.embeddings import EmbeddingClient
+                    from rag.retriever import VectorStoreManager
+                    
+                    embedder = EmbeddingClient()
+                    query_vector = embedder.get_embeddings([last_user_msg])[0]
+                    
+                    retriever = VectorStoreManager()
+                    matched_chunks = retriever.query_similarity(
+                        collection_name=crawl_id,
+                        query_embedding=query_vector,
+                        top_k=3
+                    )
+                    if matched_chunks:
+                        context = "\n---\n".join([c["text"] for c in matched_chunks])
+                        logger.info(f"Retrieved {len(matched_chunks)} chunks for chat context.")
+                except Exception as e:
+                    logger.error(f"RAG context retrieval failed for chatbot: {e}")
+
         # System prompt instruction
         system_prompt = (
             "You are Smart DevTool AI, an expert software developer and API specialist. "
             "Help developers design, debug, integrate, and understand APIs, REST patterns, and client SDK wrappers. "
             "Provide clear, concise explanations and code blocks when helpful."
         )
+        if context:
+            system_prompt += (
+                "\n\nHere is the relevant API documentation context retrieved from the database:\n"
+                f"{context}\n"
+                "\nUse the above context to answer the user's questions accurately. "
+                "If the answer cannot be found in the documentation context, rely on your general knowledge "
+                "but make sure to mention that it is not explicitly documented."
+            )
 
         # 1. Gemini Provider
         if self.provider == "gemini":

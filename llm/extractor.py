@@ -299,7 +299,8 @@ STRICT RULES:
 - Do NOT invent endpoints, parameters, authentication methods, or response fields.
 - If information is not explicitly present in the documentation, leave the value empty ("") or use an empty list ([]).
 - Use the official API name exactly as documented.
-- Extract the primary base URL.
+- Extract the primary base URL of the API. Never fallback to placeholder values like "https://api.example.com/v1" or similar if a real base URL can be found or inferred from the text.
+- Extract parameter names EXACTLY as documented. Never shorten or rename parameters (e.g., do NOT rename "latitude" to "lat" or "longitude" to "lon" or "query" to "q"). They must match the documentation's query/path/body parameter names character-for-character.
 - Extract the authentication method exactly as documented.
 - Determine the correct authentication type: bearer_token, api_key_header, api_key_query, oauth2, basic_auth, none.
 - Extract the header_name (e.g., X-API-Key), query_parameter (e.g., appid), or scheme (e.g., Bearer) if applicable.
@@ -823,6 +824,20 @@ def _normalize_endpoint(raw: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(p, dict)
     ]
 
+    # Auto-detect missing path parameters enclosed in {brackets}
+    path_vars = re.findall(r'\{([a-zA-Z0-9_]+)\}', path)
+    param_names = {p["name"] for p in parameters}
+    for var in path_vars:
+        if var not in param_names:
+            parameters.append({
+                "name": var,
+                "type": "string",
+                "location": "path",
+                "required": True,
+                "description": f"Required path parameter: {var}"
+            })
+            param_names.add(var)
+
     raw_name = _coerce_str(raw.get("name"), "")
     clean_name = _to_snake_case(raw_name)
 
@@ -932,6 +947,7 @@ def _detect_api_profile(text: str) -> tuple[str, str, str, str, str, str]:
         ("slack",    "Slack",    "https://slack.com/api",              "bearer", "Authorization", "", "Bearer"),
         ("sendgrid", "SendGrid", "https://api.sendgrid.com/v3",        "bearer", "Authorization", "", "Bearer"),
         ("anthropic", "Anthropic", "https://api.anthropic.com/v1",     "api_key_header", "x-api-key", "", ""),
+        ("meteo",    "Open-Meteo", "https://api.open-meteo.com/v1",    "none", "", "", ""),
     ]
 
     for keyword, name, base_url, auth_type, header, query, scheme in profiles:
@@ -954,6 +970,22 @@ def _detect_mock_endpoints(text: str, api_name: str) -> List[Dict[str, Any]]:
     """
     # Map of trigger keywords -> endpoint spec
     candidates = [
+        (
+            {"weather", "meteo", "forecast"},
+            {
+                "name":        "get_forecast",
+                "path":        "/forecast",
+                "method":      "GET",
+                "summary":     "Get hourly weather forecast for 7 days.",
+                "parameters": [
+                    {"name": "latitude",      "type": "float",   "required": True,  "default": None, "description": "Geographical latitude coordinate."},
+                    {"name": "longitude",     "type": "float",   "required": True,  "default": None, "description": "Geographical longitude coordinate."},
+                    {"name": "hourly",        "type": "string",  "required": False, "default": None, "description": "List of hourly weather variables."},
+                    {"name": "forecast_days", "type": "int",     "required": False, "default": None, "description": "Number of forecast days."},
+                ],
+                "response": {"latitude": "float", "longitude": "float", "elevation": "float", "hourly": "object"},
+            },
+        ),
         (
             {"user", "users"},
             {

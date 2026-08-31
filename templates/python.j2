@@ -1,6 +1,19 @@
 import os
+import time
 from typing import Any, Dict, List, Optional
 import requests
+
+class ApiClientError(Exception):
+    """Exception raised for errors in the {{ api_name }}Client."""
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        response_text: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
 
 class {{ api_name }}Client:
     """Client wrapper for {{ api_name }} API.
@@ -39,14 +52,19 @@ class {{ api_name }}Client:
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
 
-        # Configure authentication header
-        {% if authentication.type in ['bearer_token', 'bearer'] %}
+        # Configure authentication
+        {% if authentication.type in ['bearer_token', 'bearer', 'oauth2'] %}
         self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
+        {% elif authentication.type == 'jwt' %}
+        self.session.headers.update({"Authorization": f"JWT {self.api_key}"})
         {% elif authentication.type == 'api_key_header' %}
         header_name = "{{ authentication.header_name or 'X-API-Key' }}"
         self.session.headers.update({header_name: self.api_key})
         {% elif authentication.type == 'basic_auth' %}
         self.session.headers.update({"Authorization": f"Basic {self.api_key}"})
+        {% elif authentication.type == 'cookie' %}
+        cookie_name = "{{ authentication.cookie_name or 'session_id' }}"
+        self.session.cookies.set(cookie_name, self.api_key)
         {% endif %}
 
     def _request(
@@ -58,8 +76,10 @@ class {{ api_name }}Client:
         headers: Optional[Dict[str, Any]] = None,
         cookies: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Executes an HTTP request and checks for errors.
+        files: Optional[Dict[str, Any]] = None,
+        stream: bool = False,
+    ) -> Any:
+        """Executes an HTTP request with automatic retries and checks for errors.
 
         Args:
             method: HTTP method (GET, POST, etc.).
@@ -69,12 +89,14 @@ class {{ api_name }}Client:
             headers: Request-specific headers.
             cookies: Request-specific cookies.
             data: Request-specific form data.
+            files: Request-specific file streams.
+            stream: Whether to stream the response content.
 
         Returns:
-            The parsed JSON response as a dictionary.
+            The parsed JSON response, binary content, raw text, or raw streaming response.
 
         Raises:
-            requests.HTTPError: For 4xx and 5xx response statuses.
+            ApiClientError: If the request fails or response status code indicates an error.
         """
         url = f"{self.base_url}{path}"
         
@@ -92,103 +114,338 @@ class {{ api_name }}Client:
         if headers:
             req_headers.update(headers)
 
-        response = self.session.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json_data,
-            data=data,
-            headers=req_headers if req_headers else None,
-            cookies=cookies,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        
-        if response.status_code == 204:
-            return {}
-            
-        return response.json()
+        max_attempts = 4  # 1 initial request + 3 retries
+        backoff_base = 1.0
+
+        for attempt in range(max_attempts):
+            try:
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=json_data,
+                    data=data,
+                    files=files,
+                    headers=req_headers if req_headers else None,
+                    cookies=cookies,
+                    timeout=self.timeout,
+                    stream=stream,
+                )
+
+                # Retry on specific transient error codes if attempts are remaining
+                if response.status_code in [429, 500, 502, 503, 504]:
+                    if attempt < max_attempts - 1:
+                        sleep_time = backoff_base * (2**attempt)
+                        time.sleep(sleep_time)
+                        continue
+
+                response.raise_for_status()
+                
+                if response.status_code == 204:
+                    return {}
+
+                # Stream response
+                if stream or "text/event-stream" in response.headers.get("content-type", "").lower():
+                    return response
+
+                content_type = response.headers.get("content-type", "").lower()
+                if "application/json" in content_type:
+                    try:
+                        return response.json()
+                    except ValueError:
+                        return response.text
+                elif "text/" in content_type:
+                    return response.text
+                elif any(binary_type in content_type for binary_type in ["octet-stream", "image/", "audio/", "video/", "pdf", "zip"]):
+                    return response.content
+                
+                try:
+                    return response.json()
+                except ValueError:
+                    return response.text
+
+            except requests.exceptions.HTTPError as e:
+                raise ApiClientError(
+                    message=f"HTTP error occurred: {e}",
+                    status_code=e.response.status_code if e.response is not None else None,
+                    response_text=e.response.text if e.response is not None else None
+                ) from e
+            except requests.exceptions.RequestException as e:
+                raise ApiClientError(message=f"Request failed: {e}") from e
 
     {% for endpoint in endpoints %}
+    {% set ns = namespace(sorted_params=[]) %}
+    {# 1. Required path params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if param.required and param.location == 'path' %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {# 2. Required body params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if param.required and param.location == 'body' %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {# 3. Required other params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if param.required and param.location not in ['path', 'body'] %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {# 4. Optional body params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if not param.required and param.location == 'body' %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {# 5. Optional query params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if not param.required and param.location == 'query' %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {# 6. Optional other params #}
+    {% for param in endpoint.parameters %}
+      {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% if not param.required and param.location not in ['body', 'query'] %}
+          {% set _ = ns.sorted_params.append(param) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {% set has_stream_param = namespace(found=false) %}
+    {% for param in endpoint.parameters %}
+      {% if param.name == 'stream' %}
+        {% set has_stream_param.found = true %}
+      {% endif %}
+    {% endfor %}
     def {{ endpoint.name }}(
         self,
-        {% for param in endpoint.parameters %}
-        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% for param in ns.sorted_params %}
+        {% set ptype = 'Any' if param.type in ['object', 'dict'] else 'list' if param.type == 'array' else 'float' if param.type in ['float', 'number'] else 'int' if param.type in ['int', 'integer'] else 'bool' if param.type in ['bool', 'boolean'] else 'str' %}
         {% if param.required %}
-        {{ param.name }}: {{ 'Any' if param.type == 'object' else 'list' if param.type == 'array' else 'float' if param.type == 'float' else 'int' if param.type == 'int' else 'bool' if param.type == 'boolean' else 'str' }},
-        {% endif %}
-        {% endif %}
-        {% endfor %}
-        {% for param in endpoint.parameters %}
-        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
-        {% if not param.required %}
-        {{ param.name }}: Optional[{{ 'Any' if param.type == 'object' else 'list' if param.type == 'array' else 'float' if param.type == 'float' else 'int' if param.type == 'int' else 'bool' if param.type == 'boolean' else 'str' }}] = None,
-        {% endif %}
+        {{ param.name }}: {{ ptype }},
+        {% else %}
+        {{ param.name }}: Optional[{{ ptype }}] = None,
         {% endif %}
         {% endfor %}
-    ) -> Dict[str, Any]:
-        """{{ endpoint.summary or endpoint.description }}
+        {% if not has_stream_param.found %}
+        stream: bool = False,
+        {% endif %}
+    ) -> Any:
+        """{{ endpoint.summary or endpoint.description or 'No description provided.' }}
+        {% if ns.sorted_params or not has_stream_param.found %}
 
         Args:
-            {% for param in endpoint.parameters %}
-            {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
-            {{ param.name }}: {{ param.description or 'No description provided.' }}
-            {% endif %}
+            {% for param in ns.sorted_params %}
+            {% set ptype = 'dict' if param.type in ['object', 'dict'] else 'list' if param.type == 'array' else 'float' if param.type in ['float', 'number'] else 'int' if param.type in ['int', 'integer'] else 'bool' if param.type in ['bool', 'boolean'] else 'str' %}
+            {{ param.name }} ({{ ptype }}{% if not param.required %}, optional{% endif %}): {{ param.description or 'No description provided.' }}
             {% endfor %}
+            {% if not has_stream_param.found %}
+            stream (bool, optional): Whether to stream the response content. Defaults to False.
+            {% endif %}
+        {%- endif %}
 
         Returns:
-            The parsed API response.
+            Any: The parsed API response.
+
+        Raises:
+            ValueError: If a required parameter is missing.
+            ApiClientError: If the request fails.
         """
+        {% for param in ns.sorted_params %}
+        {% if param.required %}
+        if {{ param.name }} is None:
+            raise ValueError("{{ param.name }} is required.")
+        {% endif %}
+        {% endfor %}
+        {% if '{' in endpoint.path %}
         path = f"{{ endpoint.path }}"
-        
+        {% else %}
+        path = "{{ endpoint.path }}"
+        {% endif %}
+
+        {% set query_params = endpoint.parameters | selectattr('location', 'equalto', 'query') | list %}
+        {% if query_params %}
         params = {}
-        {% for param in endpoint.parameters %}
-        {% if param.location == 'query' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% for param in query_params %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
         if {{ param.name }} is not None:
             params["{{ param.name }}"] = {{ param.name }}
         {% endif %}
         {% endfor %}
+        if not params:
+            params = None
+        {% else %}
+        params = None
+        {% endif %}
 
+        {% set body_params = endpoint.parameters | selectattr('location', 'equalto', 'body') | list %}
+        {% if body_params %}
         json_data = {}
-        {% for param in endpoint.parameters %}
-        {% if param.location == 'body' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% for param in body_params %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
         if {{ param.name }} is not None:
             json_data["{{ param.name }}"] = {{ param.name }}
         {% endif %}
         {% endfor %}
+        if not json_data:
+            json_data = None
+        {% else %}
+        json_data = None
+        {% endif %}
 
+        {% set header_params = endpoint.parameters | selectattr('location', 'equalto', 'header') | list %}
+        {% if header_params %}
         headers = {}
-        {% for param in endpoint.parameters %}
-        {% if param.location == 'header' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% for param in header_params %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
         if {{ param.name }} is not None:
             headers["{{ param.name }}"] = {{ param.name }}
         {% endif %}
         {% endfor %}
+        if not headers:
+            headers = None
+        {% else %}
+        headers = None
+        {% endif %}
 
+        {% set cookie_params = endpoint.parameters | selectattr('location', 'equalto', 'cookie') | list %}
+        {% if cookie_params %}
         cookies = {}
-        {% for param in endpoint.parameters %}
-        {% if param.location == 'cookie' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        {% for param in cookie_params %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
         if {{ param.name }} is not None:
             cookies["{{ param.name }}"] = {{ param.name }}
         {% endif %}
         {% endfor %}
+        if not cookies:
+            cookies = None
+        {% else %}
+        cookies = None
+        {% endif %}
 
+        {% set form_params = endpoint.parameters | selectattr('location', 'equalto', 'form') | list %}
+        {% if form_params %}
         data = {}
-        {% for param in endpoint.parameters %}
-        {% if param.location == 'form' and param.name != authentication.query_parameter and param.name != authentication.header_name %}
+        files = {}
+        {% for param in form_params %}
+        {% if param.name != authentication.query_parameter and param.name != authentication.header_name %}
         if {{ param.name }} is not None:
-            data["{{ param.name }}"] = {{ param.name }}
+            if isinstance({{ param.name }}, (bytes, bytearray)) or hasattr({{ param.name }}, "read") or "{{ param.name }}" in ["file", "files"] or "{{ param.type }}" == "binary":
+                files["{{ param.name }}"] = {{ param.name }}
+            else:
+                data["{{ param.name }}"] = {{ param.name }}
         {% endif %}
         {% endfor %}
+        if not data:
+            data = None
+        if not files:
+            files = None
+        {% else %}
+        data = None
+        files = None
+        {% endif %}
 
         return self._request(
             method="{{ endpoint.method }}",
             path=path,
-            params=params if params else None,
-            json_data=json_data if json_data else None,
-            headers=headers if headers else None,
-            cookies=cookies if cookies else None,
-            data=data if data else None,
+            params=params,
+            json_data=json_data,
+            headers=headers,
+            cookies=cookies,
+            data=data,
+            files=files,
+            stream=stream,
         )
 
+    {% set has_pagination = namespace(found=false, param_name=none, type=none) %}
+    {% for param in endpoint.parameters %}
+      {% if param.location == 'query' and param.name in ['starting_after', 'cursor', 'page', 'offset', 'next_page_token'] %}
+        {% set has_pagination.found = true %}
+        {% set has_pagination.param_name = param.name %}
+        {% set has_pagination.type = param.name %}
+      {% endif %}
+    {% endfor %}
+    {% if has_pagination.found and endpoint.method == 'GET' %}
+
+    def {{ endpoint.name }}_iter(
+        self,
+        {% for param in ns.sorted_params %}
+        {% set ptype = 'Any' if param.type in ['object', 'dict'] else 'list' if param.type == 'array' else 'float' if param.type in ['float', 'number'] else 'int' if param.type in ['int', 'integer'] else 'bool' if param.type in ['bool', 'boolean'] else 'str' %}
+        {% if param.required %}
+        {{ param.name }}: {{ ptype }},
+        {% else %}
+        {{ param.name }}: Optional[{{ ptype }}] = None,
+        {% endif %}
+        {% endfor %}
+    ) -> Any:
+        """Helper generator to iterate over all pages of {{ endpoint.name }} yielding items.
+        """
+        current_params = {
+            {% for param in ns.sorted_params %}
+            "{{ param.name }}": {{ param.name }},
+            {% endfor %}
+        }
+        
+        while True:
+            response = self.{{ endpoint.name }}(**current_params)
+            
+            if isinstance(response, list):
+                items = response
+            elif isinstance(response, dict):
+                items = None
+                for key in ["data", "items", "results", "objects"]:
+                    if key in response and isinstance(response[key], list):
+                        items = response[key]
+                        break
+                if items is None:
+                    for val in response.values():
+                        if isinstance(val, list):
+                            items = val
+                            break
+                if items is None:
+                    items = [response]
+            else:
+                items = [response]
+                
+            if not items:
+                break
+                
+            for item in items:
+                yield item
+                
+            {% if 'page' in has_pagination.type %}
+            if current_params.get("{{ has_pagination.param_name }}") is None:
+                current_params["{{ has_pagination.param_name }}"] = 1
+            current_params["{{ has_pagination.param_name }}"] += 1
+            {% elif 'offset' in has_pagination.type %}
+            if current_params.get("{{ has_pagination.param_name }}") is None:
+                current_params["{{ has_pagination.param_name }}"] = 0
+            current_params["{{ has_pagination.param_name }}"] += len(items)
+            {% elif 'starting_after' in has_pagination.type %}
+            last_item = items[-1]
+            if isinstance(last_item, dict) and "id" in last_item:
+                current_params["{{ has_pagination.param_name }}"] = last_item["id"]
+            else:
+                break
+            {% else %}
+            next_cursor = None
+            if isinstance(response, dict):
+                next_cursor = response.get("next_cursor") or response.get("next_page_token") or response.get("next_link")
+            if not next_cursor:
+                break
+            current_params["{{ has_pagination.param_name }}"] = next_cursor
+            {% endif %}
+    {% endif %}
     {% endfor %}

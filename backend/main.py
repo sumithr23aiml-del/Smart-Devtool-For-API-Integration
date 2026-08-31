@@ -53,13 +53,23 @@ app.add_middleware(
 static_dir = os.path.join(BASE_DIR, "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Mount React build assets if they exist
+dist_dir = os.path.join(BASE_DIR, "frontend", "dist")
+dist_assets_dir = os.path.join(dist_dir, "assets")
+if os.path.exists(dist_assets_dir):
+    app.mount("/assets", StaticFiles(directory=dist_assets_dir), name="assets")
+
 # Include router
 app.include_router(router)
 
 @app.get("/")
 async def root():
+    dist_index = os.path.join(BASE_DIR, "frontend", "dist", "index.html")
+    if os.path.exists(dist_index):
+        return FileResponse(dist_index)
     index_path = os.path.join(BASE_DIR, "frontend", "index.html")
     return FileResponse(index_path)
+
 
 if __name__ == "__main__":
     import uvicorn
